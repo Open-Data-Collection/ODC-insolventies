@@ -1,0 +1,2 @@
+requests>=2.31,<3
+odc-lib @ git+https://github.com/open-data-collection/ODC-scraping-infra.git#subdirectory=lib/odc-lib

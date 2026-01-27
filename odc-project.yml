@@ -1,0 +1,28 @@
+name: insolventies
+description: Scraper for Dutch insolvency records from insolventies.rechtspraak.nl
+version: "1.0"
+
+source:
+  type: api
+  url: https://insolventies.rechtspraak.nl
+
+schedule:
+  discovery: "0 6 * * *"  # Daily at 06:00
+
+storage:
+  minio:
+    bucket: raw-data
+    prefix: insolventies/
+  clickhouse:
+    database: default
+    tables:
+      - insolventies
+      - insolventie_publicaties
+      - insolventie_documenten
+
+env:
+  - MINIO_ENDPOINT
+  - MINIO_ACCESS_KEY
+  - MINIO_SECRET_KEY
+  - CLICKHOUSE_HOST
+  - ANONYMIZATION_SALT
