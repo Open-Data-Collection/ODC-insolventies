@@ -25,6 +25,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Checkout odc-lib from infra repo
+        uses: actions/checkout@v4
+        with:
+          repository: open-data-collection/ODC-scraping-infra
+          path: _infra
+          sparse-checkout: lib/odc-lib
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Copy odc-lib into vendor/
+        run: cp -r _infra/lib/odc-lib vendor/odc-lib && rm -rf _infra
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
