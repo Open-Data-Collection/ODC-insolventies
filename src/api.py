@@ -53,6 +53,7 @@ class ApiClient:
 
     def _fetch_csrf(self):
         logger.info("Fetching CSRF token")
+        self._throttle()
         resp = self.session.get(BASE_URL, timeout=30)
         resp.raise_for_status()
         match = re.search(
