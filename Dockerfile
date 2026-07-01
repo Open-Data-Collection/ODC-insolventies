@@ -8,4 +8,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-ENTRYPOINT ["python", "-m", "src.main"]
+# One image, three modes. Nomad picks the module per component:
+#   args = ["src.scheduler"]  # scheduler.nomad.hcl (discovery)
+#   args = ["src.worker"]     # worker.nomad.hcl (scrape)
+#   args = ["src.processor"]  # processor.nomad.hcl (fan-out)
+ENTRYPOINT ["python", "-m"]
+CMD ["src.worker"]

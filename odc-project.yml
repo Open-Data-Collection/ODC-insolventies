@@ -1,28 +1,38 @@
 name: insolventies
 description: Scraper for Dutch insolvency records from insolventies.rechtspraak.nl
-version: "1.0"
+version: "2.0"
 
 source:
   type: api
   url: https://insolventies.rechtspraak.nl
 
-schedule:
-  discovery: "0 6 * * *"  # Daily at 06:00
+# Three-component pipeline (see nomad/). Discovery runs in the scheduler.
+components:
+  scheduler: "0 6 * * *"   # daily court sweep → insolventies:tasks
+  worker: service          # drains insolventies:tasks → insolventies.raw_cases
+  processor: "*/30 * * * *" # raw_cases → processed_cases/publications/documents
+
+queue: insolventies:tasks
 
 storage:
   minio:
     bucket: raw-data
-    prefix: insolventies/
+    prefix: insolventies/      # PDFs under insolventies/pdfs/
   clickhouse:
-    database: default
+    database: insolventies
     tables:
-      - insolventies
-      - insolventie_publicaties
-      - insolventie_documenten
+      - raw_cases
+      - processed_cases
+      - processed_publications
+      - processed_documents
 
 env:
-  - MINIO_ENDPOINT
-  - MINIO_ACCESS_KEY
-  - MINIO_SECRET_KEY
+  - REDIS_URL
   - CLICKHOUSE_HOST
+  - CLICKHOUSE_USER
+  - CLICKHOUSE_PASSWORD
+  - STORAGE_MINIO_ENDPOINT
+  - STORAGE_MINIO_ACCESS_KEY
+  - STORAGE_MINIO_SECRET_KEY
   - ANONYMIZATION_SALT
+  - REQUEST_DELAY

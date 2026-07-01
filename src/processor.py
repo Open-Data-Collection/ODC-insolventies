@@ -1,0 +1,138 @@
+"""Processor for insolventies.
+
+Reads status='ok' rows from insolventies.raw_cases, parses the embedded record
+JSON, and fans each case out into three analytics tables:
+  - processed_cases         (one row per case)
+  - processed_publications  (one row per publication event)
+  - processed_documents     (one row per verslag)
+
+Checkpoint on scraped_at (DateTime64 UTC). Runs on odc-storage next to CH.
+"""
+from __future__ import annotations
+
+import json
+from datetime import date
+
+from odc.processor import Processor
+from odc.logging import warn
+
+
+def _to_date(value):
+    """ISO 'YYYY-MM-DD' (or None) → date | None. Tolerant of junk."""
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def _pick_city(addresses: list[dict]) -> str | None:
+    """First non-empty city, preferring a vestiging address."""
+    for want in ("vestiging", "woon", "correspondentie", None):
+        for addr in addresses:
+            if (want is None or addr.get("type") == want) and addr.get("city"):
+                return addr["city"]
+    return None
+
+
+class InsolventiesProcessor(Processor):
+    name               = "insolventies-processor"
+    source_table       = "insolventies.raw_cases"
+    target_table       = "insolventies.processed_cases"
+    checkpoint_column  = "scraped_at"
+    initial_checkpoint = "1970-01-01 00:00:00.000"
+    max_batch          = 20_000
+
+    def fetch_batch(self, last_checkpoint, limit):
+        # scraped_at is DateTime64(_, 'UTC'); checkpoint_predicate() parses the
+        # checkpoint as UTC to avoid the session-tz pinning trap (#19).
+        return self.ch.query(
+            f"""
+            SELECT kenmerk, scraped_at, record
+            FROM {self.source_table}
+            WHERE {self.checkpoint_predicate()}
+              AND status = 'ok'
+              AND record != ''
+            ORDER BY scraped_at
+            LIMIT %(n)s
+            """,
+            parameters={"c": last_checkpoint, "n": limit},
+        ).named_results()
+
+    def process(self, row):
+        """Parse one raw_cases row into case + publication + document rows."""
+        try:
+            rec = json.loads(row["record"])
+        except (json.JSONDecodeError, TypeError) as e:
+            warn("bad record json", kenmerk=row.get("kenmerk"), err=str(e),
+                 **self._log_kwargs())
+            return None
+
+        scraped_at = row["scraped_at"]
+        kenmerk = rec.get("kenmerk") or row["kenmerk"]
+        debtor = rec.get("debtor") or {}
+        publications = rec.get("publications") or []
+        documents = rec.get("documents") or []
+
+        case = {
+            "kenmerk":            kenmerk,
+            "insolventienummer":  rec.get("insolventienummer", ""),
+            "toezichtzaaknummer": rec.get("toezichtzaaknummer", ""),
+            "type":               rec.get("type", ""),
+            "court":              rec.get("court", ""),
+            "judge":              rec.get("judge", ""),
+            "is_anonymized":      bool(rec.get("is_anonymized", False)),
+            "debtor_name":        debtor.get("name", ""),
+            "kvk_nummer":         debtor.get("kvk_nummer"),
+            "city":               _pick_city(debtor.get("addresses") or []),
+            "curator_names":      [c.get("name", "") for c in (rec.get("curators") or [])],
+            "publication_count":  len(publications),
+            "document_count":     len(documents),
+            "scraped_at":         scraped_at,
+        }
+
+        pub_rows = [{
+            "kenmerk":            kenmerk,
+            "publicatie_kenmerk": p.get("kenmerk", ""),
+            "publicatie_datum":   _to_date(p.get("date")),
+            "description":        p.get("description", ""),
+            "event_type":         p.get("event_type", ""),
+            "event_subtype":      p.get("event_subtype"),
+            "event_date":         _to_date(p.get("event_date")),
+            "insolvency_type":    p.get("insolvency_type", ""),
+            "scraped_at":         scraped_at,
+        } for p in publications]
+
+        doc_rows = [{
+            "kenmerk":          kenmerk,
+            "document_kenmerk": d.get("kenmerk", ""),
+            "document_date":    _to_date(d.get("date")),
+            "document_type":    d.get("type", ""),
+            "pdf_path":         d.get("pdf_path"),
+            "scraped_at":       scraped_at,
+        } for d in documents]
+
+        return {"case": case, "publications": pub_rows, "documents": doc_rows}
+
+    def write(self, transformed):
+        """Fan out the parsed bundles into the three processed_* tables."""
+        cases = [t["case"] for t in transformed]
+        pubs = [p for t in transformed for p in t["publications"]]
+        docs = [d for t in transformed for d in t["documents"]]
+
+        self._insert("insolventies.processed_cases", cases)
+        self._insert("insolventies.processed_publications", pubs)
+        self._insert("insolventies.processed_documents", docs)
+        return len(cases)
+
+    def _insert(self, table, rows):
+        if not rows:
+            return
+        cols = list(rows[0].keys())
+        data = [[r[c] for c in cols] for r in rows]
+        self.ch.insert(table, data, column_names=cols)
+
+
+if __name__ == "__main__":
+    raise SystemExit(InsolventiesProcessor().run())

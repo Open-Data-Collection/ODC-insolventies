@@ -144,6 +144,7 @@ class Document:
     kenmerk: str  # underscored format
     date: Optional[str]
     type: str
+    pdf_path: Optional[str] = None  # storage MinIO key, set by the worker after upload
 
 
 @dataclass

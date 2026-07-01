@@ -90,46 +90,84 @@ class ApiClient:
 
         return resp
 
+    @staticmethod
+    def _month_back(now: datetime) -> datetime:
+        """One calendar month before `now`, matching the site's 'Laatste maand'
+        lower bound. Day clamped to 28 so we never build an invalid date; the
+        server's exact minimum is honoured via the validation-reject retry in
+        search()."""
+        month = now.month - 1 or 12
+        year = now.year - (1 if now.month == 1 else 0)
+        return now.replace(year=year, month=month, day=min(now.day, 28))
+
+    def _default_start_date(self, periode: str, now: datetime) -> str:
+        if periode == "Laatste week":
+            return (now - timedelta(days=7)).isoformat()
+        if periode == "Vandaag":
+            return now.isoformat()
+        # "Laatste maand" (and any unknown periode): one calendar month back.
+        return self._month_back(now).isoformat()
+
     def search(self, court: str, periode: str = "Laatste maand") -> list[dict]:
         """Search for insolvency publications for a given court.
 
-        Returns the raw list of result dicts from the API.
+        Returns the raw JSON result dict from the API. The API enforces a
+        minimum startDate (~one calendar month back) and rejects anything
+        earlier with a validation message; we parse that message and retry once
+        with the server-provided minimum so we always request the widest allowed
+        window.
         """
         self._ensure_csrf()
         self._throttle()
 
-        # Compute startDate from periode, matching the frontend logic
         now = datetime.utcnow()
-        if periode == "Laatste maand":
-            start_date = (now - timedelta(days=31)).isoformat()
-        elif periode == "Laatste week":
-            start_date = (now - timedelta(days=8)).isoformat()
-        elif periode == "Vandaag":
-            start_date = now.isoformat()
-        else:
-            start_date = (now - timedelta(days=31)).isoformat()
+        start_date = self._default_start_date(periode, now)
 
-        inner_model = {
-            "periode": periode,
-            "rechtbank": [court],
-            "publicatiesoort": [],  # empty = all types
-            "publicatiekenmerk": "",
-            "insolventienummer": "",
-            "startDate": start_date,
-        }
+        def _do(sd: str):
+            inner_model = {
+                "periode": periode,
+                "rechtbank": [court],
+                "publicatiesoort": [],  # empty = all types
+                "publicatiekenmerk": "",
+                "insolventienummer": "",
+                "startDate": sd,
+            }
+            payload = {"model": json.dumps(inner_model)}
+            try:
+                r = self._post_search(payload)
+            except requests.RequestException:
+                self._csrf_token = None
+                self._ensure_csrf()
+                r = self._post_search(payload)
+            r.raise_for_status()
+            return r.json()
 
-        payload = {"model": json.dumps(inner_model)}
+        logger.info("Searching court=%s periode=%s startDate=%s", court, periode, start_date[:10])
+        data = _do(start_date)
 
-        logger.info("Searching court=%s periode=%s", court, periode)
-        try:
-            resp = self._post_search(payload)
-        except requests.RequestException:
-            self._csrf_token = None
-            self._ensure_csrf()
-            resp = self._post_search(payload)
+        corrected = self._corrected_start_date(data)
+        if corrected:
+            logger.info("startDate rejected; retrying court=%s with server minimum %s", court, corrected)
+            self._throttle()
+            data = _do(corrected)
+        return data
 
-        resp.raise_for_status()
-        return resp.json()
+    @staticmethod
+    def _corrected_start_date(data: dict) -> Optional[str]:
+        """If the response is a StartDate validation reject, return the allowed
+        minimum as an ISO datetime; otherwise None."""
+        if not isinstance(data, dict):
+            return None
+        result = data.get("result", data)
+        if not isinstance(result, dict) or result.get("status") != 3:
+            return None
+        for vm in result.get("validationMessages") or []:
+            if str(vm.get("key", "")).lower() == "startdate" or "StartDate" in str(vm.get("message", "")):
+                m = re.search(r"(\d{2})-(\d{2})-(\d{4})", vm.get("message", ""))
+                if m:
+                    d, mo, y = m.groups()
+                    return f"{y}-{mo}-{d}T00:00:00"
+        return None
 
     def get_case(self, kenmerk: str) -> dict:
         """Fetch full case details for a given kenmerk."""

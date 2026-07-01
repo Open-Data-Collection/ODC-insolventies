@@ -1,8 +1,16 @@
+"""Case scraping logic — turn a kenmerk into a parsed InsolvencyRecord.
+
+This module is storage-agnostic: it fetches from the rechtspraak API, parses
+the response into an `InsolvencyRecord`, attaches reports/documents, and
+anonymizes natural persons. It performs NO writes — the worker (src/worker.py)
+owns persistence (raw_cases + PDF upload). Splitting it out this way lets the
+worker call `build_record()` and decide how to store the result.
+"""
 from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Optional
 
 from src.api import ApiClient
@@ -10,7 +18,6 @@ from src.models import (
     Address, Curator, Debtor, Document, InsolvencyRecord, Publication,
 )
 from src.privacy import anonymize_record
-from src.storage import upload_record, upload_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +69,7 @@ def _format_curator_address(adres: Optional[dict]) -> Optional[str]:
     return ", ".join(parts) if parts else None
 
 
-def _parse_case(raw: dict) -> InsolvencyRecord:
+def parse_case(raw: dict) -> InsolvencyRecord:
     """Parse raw API response into an InsolvencyRecord."""
     # Response is wrapped in {model: {...}, status: N}
     model = raw.get("model", raw) if isinstance(raw, dict) else raw
@@ -180,19 +187,16 @@ def _parse_case(raw: dict) -> InsolvencyRecord:
     )
 
 
-def scrape_case(
-    client: ApiClient,
-    kenmerk: str,
-    upload: bool = True,
-) -> Optional[InsolvencyRecord]:
-    """Fetch and process a single case by kenmerk."""
-    try:
-        raw = client.get_case(kenmerk)
-    except Exception:
-        logger.exception("Failed to fetch case %s", kenmerk)
-        return None
+def build_record(client: ApiClient, kenmerk: str) -> InsolvencyRecord:
+    """Fetch, parse, enrich, and anonymize a single case. No storage side-effects.
 
-    record = _parse_case(raw)
+    Raises on fetch/parse failure so the caller (worker) can record the attempt
+    with the right status. Report/document enrichment failures are swallowed
+    (best-effort) — the core record is still returned.
+    """
+    raw = client.get_case(kenmerk)
+    record = parse_case(raw)
+
     # Set the query kenmerk (may differ from the latest publication kenmerk)
     if not record.kenmerk:
         record.kenmerk = kenmerk
@@ -219,43 +223,4 @@ def scrape_case(
     if record.type in ("person", "eenmanszaak"):
         anonymize_record(record)
 
-    if upload:
-        try:
-            upload_record(record.to_dict(), kenmerk)
-        except Exception:
-            logger.exception("Failed to upload record for %s", kenmerk)
-
-        # Download and upload PDFs for company and eenmanszaak cases
-        if record.type in ("company", "eenmanszaak"):
-            for doc in record.documents:
-                try:
-                    pdf_data = client.download_pdf(doc.kenmerk)
-                    upload_pdf(pdf_data, doc.kenmerk)
-                except Exception:
-                    logger.warning("Failed to download/upload PDF %s", doc.kenmerk, exc_info=True)
-
     return record
-
-
-def scrape_from_file(
-    client: ApiClient,
-    input_path: str,
-    upload: bool = True,
-) -> list[InsolvencyRecord]:
-    """Scrape all kenmerks from a discovery JSONL file."""
-    import json
-
-    records = []
-    with open(input_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            entry = json.loads(line)
-            kenmerk = entry["kenmerk"]
-            record = scrape_case(client, kenmerk, upload=upload)
-            if record:
-                records.append(record)
-
-    logger.info("Scraped %d cases from %s", len(records), input_path)
-    return records
