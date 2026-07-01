@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 
 from odc import OdcClient
 from odc.logging import info, warn, error, heartbeat
-from odc.stats import counter
 
 from src.api import ApiClient
 from src.scrape import build_record
@@ -61,7 +60,6 @@ def _upload_pdfs(client: OdcClient, api: ApiClient, record) -> None:
         try:
             client.put_object("storage", key, pdf_bytes, content_type="application/pdf")
             doc.pdf_path = key
-            counter("pdfs_uploaded", project=PROJECT, service="worker")
         except Exception as e:
             warn("pdf upload failed", kenmerk=record.kenmerk, doc=doc.kenmerk,
                  err=f"{type(e).__name__}: {e}", **_LOG)
@@ -152,10 +150,6 @@ def main() -> int:
 
         row = scrape_task(client, api, kenmerk)
         pending.append(row)
-        counter("cases_attempted", project=PROJECT, service="worker",
-                labels={"status": row["status"]})
-        if row["status"] == "ok":
-            counter("cases_succeeded", project=PROJECT, service="worker")
 
         if len(pending) >= FLUSH_ROWS or (time.time() - last_flush) > FLUSH_SECS:
             _flush(ch, pending)

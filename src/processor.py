@@ -45,13 +45,16 @@ class InsolventiesProcessor(Processor):
     max_batch          = 20_000
 
     def fetch_batch(self, last_checkpoint, limit):
-        # scraped_at is DateTime64(_, 'UTC'); checkpoint_predicate() parses the
-        # checkpoint as UTC to avoid the session-tz pinning trap (#19).
+        # scraped_at is DateTime64(_, 'UTC'). Parse the checkpoint explicitly as
+        # UTC — a bare `scraped_at > %(c)s` would parse it in the CH session tz
+        # (Europe/Amsterdam) and can silently pin the checkpoint (#19). (Inlined
+        # rather than using Processor.checkpoint_predicate() so we don't depend
+        # on that odc-lib method being present in the deployed image.)
         return self.ch.query(
             f"""
             SELECT kenmerk, scraped_at, record
             FROM {self.source_table}
-            WHERE {self.checkpoint_predicate()}
+            WHERE scraped_at > parseDateTime64BestEffort(%(c)s, 3, 'UTC')
               AND status = 'ok'
               AND record != ''
             ORDER BY scraped_at
