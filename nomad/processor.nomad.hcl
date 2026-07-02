@@ -28,14 +28,14 @@ job "insolventies-processor" {
         env         = true
         change_mode = "restart"
         data        = <<EOH
-CLICKHOUSE_PASSWORD={{with nomadVar "secrets/clickhouse"}}{{.odc_password}}{{end}}
+CLICKHOUSE_PASSWORD={{with nomadVar "secrets/clickhouse-insolventies"}}{{.password}}{{end}}
 EOH
       }
 
       env {
         PROJECT_NAME    = "insolventies"
         CLICKHOUSE_HOST = "clickhouse"
-        CLICKHOUSE_USER = "odc"
+        CLICKHOUSE_USER = "insolventies"
       }
 
       resources {

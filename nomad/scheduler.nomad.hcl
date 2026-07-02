@@ -29,7 +29,7 @@ job "insolventies-scheduler" {
         env         = true
         change_mode = "restart"
         data        = <<EOH
-CLICKHOUSE_PASSWORD={{with nomadVar "secrets/clickhouse"}}{{.odc_password}}{{end}}
+CLICKHOUSE_PASSWORD={{with nomadVar "secrets/clickhouse-insolventies"}}{{.password}}{{end}}
 REDIS_URL=redis://:{{with nomadVar "secrets/redis-services"}}{{.password}}{{end}}@services-redis:6379
 EOH
       }
@@ -37,7 +37,7 @@ EOH
       env {
         PROJECT_NAME    = "insolventies"
         CLICKHOUSE_HOST = "clickhouse"
-        CLICKHOUSE_USER = "odc"
+        CLICKHOUSE_USER = "insolventies"
         REQUEST_DELAY   = "1.0"
       }
 

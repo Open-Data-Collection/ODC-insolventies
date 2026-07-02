@@ -24,7 +24,7 @@ job "insolventies-worker" {
         env         = true
         change_mode = "restart"
         data        = <<EOH
-CLICKHOUSE_PASSWORD={{with nomadVar "secrets/clickhouse"}}{{.odc_password}}{{end}}
+CLICKHOUSE_PASSWORD={{with nomadVar "secrets/clickhouse-insolventies"}}{{.password}}{{end}}
 REDIS_URL=redis://:{{with nomadVar "secrets/redis-services"}}{{.password}}{{end}}@services-redis:6379
 STORAGE_MINIO_SECRET_KEY={{with nomadVar "secrets/minio-storage"}}{{.secret_key}}{{end}}
 ANONYMIZATION_SALT={{with nomadVar "secrets/insolventies"}}{{.anonymization_salt}}{{end}}
@@ -35,7 +35,7 @@ EOH
         PROJECT_NAME             = "insolventies"
         QUEUE_KEY                = "insolventies:tasks"
         CLICKHOUSE_HOST          = "clickhouse"
-        CLICKHOUSE_USER          = "odc"
+        CLICKHOUSE_USER          = "insolventies"
         STORAGE_MINIO_ENDPOINT   = "http://storage-minio:9002"
         STORAGE_MINIO_ACCESS_KEY = "minioadmin"
         REQUEST_DELAY            = "1.0"

@@ -12,7 +12,10 @@ Built on the ODC three-component pipeline pattern (see ODC-scraping-infra
   publications, anti-joins the discovered kenmerks against
   `insolventies.raw_cases` (skip already-scraped, honour cooldown/max-attempts
   for failures), and pushes `{kenmerk}` tasks to the `insolventies:tasks` Redis
-  queue.
+  queue. **Plus a full-lifecycle refresh**: re-queues already-succeeded
+  company/eenmanszaak cases that aren't yet terminal (no opheffing/einde event)
+  and were last scraped > `REFRESH_DAYS` ago (oldest-first, capped at
+  `REFRESH_BATCH`), so verslagen filed later in a case's life get picked up.
 - **Worker** (`src/worker.py`, Nomad service on `processing`): drains
   `insolventies:tasks`, scrapes each case (`src/scrape.py:build_record`),
   downloads + uploads report PDFs to storage MinIO, and writes ONE row per
@@ -80,3 +83,8 @@ scripts/grant-job-secrets.py insolventies-scheduler   # (and -worker, -processor
 - `STORAGE_MINIO_ENDPOINT` / `STORAGE_MINIO_ACCESS_KEY` / `STORAGE_MINIO_SECRET_KEY` — Storage MinIO (PDFs)
 - `ANONYMIZATION_SALT` — salt for hashing personal names (keep constant)
 - `REQUEST_DELAY` — delay between API requests in seconds (default: 1.0)
+- `REFRESH_DAYS` — re-scrape open cases last scraped older than this (default: 14, scheduler)
+- `REFRESH_BATCH` — max refresh re-queues per scheduler run (default: 2000)
+
+CH access uses the dedicated `insolventies` service user (batch profile,
+`secrets/clickhouse-insolventies`), scoped to `insolventies.*` + `task_pipeline.*`.
