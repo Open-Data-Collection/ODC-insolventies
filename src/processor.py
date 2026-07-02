@@ -17,14 +17,26 @@ from odc.processor import Processor
 from odc.logging import warn
 
 
+# ClickHouse `Date` supports 1970-01-01 .. 2149-06-06. Dutch descriptions
+# occasionally yield a mis-parsed year (e.g. event_date 3026-07-06), and a
+# single out-of-range value makes clickhouse-connect fail the whole column
+# insert ("Unable to create native array for column ..."). Clamp to None.
+CH_DATE_MIN = date(1970, 1, 1)
+CH_DATE_MAX = date(2149, 6, 6)
+
+
 def _to_date(value):
-    """ISO 'YYYY-MM-DD' (or None) → date | None. Tolerant of junk."""
+    """ISO 'YYYY-MM-DD' (or None) → date | None. Tolerant of junk and clamps
+    values outside ClickHouse's supported Date range to None."""
     if not value:
         return None
     try:
-        return date.fromisoformat(value[:10])
+        d = date.fromisoformat(value[:10])
     except (ValueError, TypeError):
         return None
+    if d < CH_DATE_MIN or d > CH_DATE_MAX:
+        return None
+    return d
 
 
 def _pick_city(addresses: list[dict]) -> str | None:

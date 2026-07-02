@@ -16,6 +16,8 @@ import signal
 import time
 from datetime import datetime, timezone
 
+from redis.exceptions import RedisError
+
 from odc import OdcClient
 from odc.logging import info, warn, error, heartbeat
 
@@ -128,7 +130,21 @@ def main() -> int:
     last_flush = time.time()
 
     while _running:
-        popped = redis.blpop(QUEUE_KEY, timeout=POP_TIMEOUT_S)
+        # A transient Redis/network hiccup (Tailscale blip, server failover)
+        # must not kill the worker — log it, back off briefly, and reconnect on
+        # the next command. Otherwise one blpop TimeoutError takes the worker
+        # down and Nomad eventually gives up after the restart cap.
+        try:
+            popped = redis.blpop(QUEUE_KEY, timeout=POP_TIMEOUT_S)
+        except RedisError as e:
+            warn("redis error on blpop; backing off", err=f"{type(e).__name__}: {e}", **_LOG)
+            if pending:
+                _flush(ch, pending)
+                pending = []
+                last_flush = time.time()
+            time.sleep(2)
+            continue
+
         if popped is None:
             if pending and (time.time() - last_flush) > FLUSH_SECS:
                 _flush(ch, pending)
