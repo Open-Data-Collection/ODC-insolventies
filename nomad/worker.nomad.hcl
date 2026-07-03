@@ -39,6 +39,10 @@ EOH
         STORAGE_MINIO_ENDPOINT   = "http://storage-minio:9002"
         STORAGE_MINIO_ACCESS_KEY = "minioadmin"
         REQUEST_DELAY            = "1.0"
+        # Below redis-py 8's 5s default socket_timeout, or every idle BLPOP
+        # raises TimeoutError instead of returning None (infra #40). Drop this
+        # once the image rebuilds against odc-lib with the socket fix.
+        POP_TIMEOUT_S            = "4"
       }
 
       resources {
