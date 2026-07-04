@@ -50,15 +50,27 @@ def _shutdown(signum, _frame):
 
 
 def _upload_pdfs(client: OdcClient, api: ApiClient, record) -> None:
-    """Download each report PDF and upload to storage MinIO; set doc.pdf_path."""
+    """Download each verslag PDF and upload to storage MinIO; set doc.pdf_path.
+
+    Verslagen are immutable once approved, so a PDF already in storage is not
+    re-downloaded — this keeps the 14-day refresh from re-fetching every
+    historical verslag on each pass (both wasteful and impolite to the source).
+    """
+    bucket = client.config.raw_data_bucket
     for doc in record.documents:
+        key = f"{PROJECT}/pdfs/{doc.kenmerk}.pdf"
+        try:
+            client.storage_minio.stat_object(bucket, key)
+            doc.pdf_path = key  # already stored — skip download
+            continue
+        except Exception:
+            pass  # not present (or stat failed) — fetch it
         try:
             pdf_bytes = api.download_pdf(doc.kenmerk)
         except Exception as e:
             warn("pdf download failed", kenmerk=record.kenmerk, doc=doc.kenmerk,
                  err=f"{type(e).__name__}: {e}", **_LOG)
             continue
-        key = f"{PROJECT}/pdfs/{doc.kenmerk}.pdf"
         try:
             client.put_object("storage", key, pdf_bytes, content_type="application/pdf")
             doc.pdf_path = key

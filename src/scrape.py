@@ -37,6 +37,19 @@ def _parse_dotnet_date(value: Optional[str]) -> Optional[str]:
     return dt.strftime("%Y-%m-%d")
 
 
+def _verslag_type(titel: str) -> str:
+    """Normalise a verslag Titel to a low-cardinality type, dropping the date.
+
+    "Financieel verslag  21-04-2026" -> "Financieel verslag"
+    "Verslag: 30-04-2026"            -> "Verslag"
+    """
+    if not titel:
+        return "Verslag"
+    # cut at the first ':' or digit (the date/colon tail)
+    head = re.split(r"[:\d]", titel, maxsplit=1)[0]
+    return head.strip() or "Verslag"
+
+
 def _extract_addresses(data: dict, addr_type: str, key: str) -> list[Address]:
     addresses = []
     for addr in data.get(key, []) or []:
@@ -201,23 +214,28 @@ def build_record(client: ApiClient, kenmerk: str) -> InsolvencyRecord:
     if not record.kenmerk:
         record.kenmerk = kenmerk
 
-    # Fetch reports/documents for company and eenmanszaak cases
-    if record.type in ("company", "eenmanszaak"):
+    # Fetch verslagen (public reports) — COMPANY cases only.
+    # eenmanszaak/person are natural persons: a verslag PDF contains their
+    # cleartext name + personal finances, which would undo the anonymization
+    # applied below. So we never fetch verslagen for them (privacy).
+    if record.type == "company" and record.insolventienummer:
         try:
-            reports = client.get_reports(kenmerk)
-            if isinstance(reports, dict):
+            reports = client.get_reports(record.insolventienummer)
+            if isinstance(reports, dict):  # defensive: tolerate a wrapped shape
                 reports = reports.get("model", reports)
                 if isinstance(reports, dict):
                     reports = reports.get("items", [])
-            if isinstance(reports, list):
-                for report in reports:
-                    doc_kenmerk = report.get("kenmerk", "").replace(".", "_")
-                    doc_date = report.get("datum") or _parse_dotnet_date(report.get("datumGoedkeuring"))
-                    doc_type = report.get("type", "Verslag")
-                    if doc_kenmerk:
-                        record.documents.append(Document(kenmerk=doc_kenmerk, date=doc_date, type=doc_type))
+            for report in reports or []:
+                vk = report.get("VerslagKenmerk", "")
+                if not vk:
+                    continue
+                record.documents.append(Document(
+                    kenmerk=vk,
+                    date=_parse_dotnet_date(report.get("DatumVerslagen")),
+                    type=_verslag_type(report.get("Titel", "")),
+                ))
         except Exception:
-            logger.warning("Failed to fetch reports for %s", kenmerk, exc_info=True)
+            logger.warning("Failed to fetch verslagen for %s", record.insolventienummer, exc_info=True)
 
     # Anonymize natural persons and eenmanszaken
     if record.type in ("person", "eenmanszaak"):

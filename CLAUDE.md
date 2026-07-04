@@ -36,6 +36,14 @@ Built on the ODC three-component pipeline pattern (see ODC-scraping-infra
 - Natural person and eenmanszaak records are anonymized (SHA-256 hashed names,
   stripped personal addresses) before storage. `ANONYMIZATION_SALT` must stay
   constant so hashes remain stable across runs.
+- **Verslagen (public financial reports) are captured for `company` cases only**
+  — eenmanszaak/person are natural persons whose verslag PDFs contain cleartext
+  personal data that would undo anonymization. Fetched via
+  `findGoedgekeurdeVerslagen/{landelijkUniekZaaknummer}` (NOT the
+  publicatiekenmerk — that returns `[]`, which is why verslagen were never
+  captured pre-2026-07). Each verslag → a `Document` (VerslagKenmerk, Titel,
+  DatumVerslagen); PDF via `getPdf/{VerslagKenmerk}` → `raw-data/insolventies/pdfs/`.
+  The worker skips PDFs already in storage (verslagen are immutable).
 - Eenmanszaak keeps trade names, vestigingsadressen, and KvK (business data is public).
 - Publication descriptions are parsed into structured event_type/event_subtype fields.
 - Retry policy lives entirely in the scheduler's anti-join SQL — the worker is

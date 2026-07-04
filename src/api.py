@@ -7,6 +7,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import quote
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -181,13 +182,20 @@ class ApiClient:
         resp.raise_for_status()
         return resp.json()
 
-    def get_reports(self, kenmerk: str) -> list[dict]:
-        """Fetch approved reports list for a case."""
+    def get_reports(self, zaaknummer: str) -> list[dict]:
+        """Fetch the approved verslagen (public reports) for a case.
+
+        Keyed on the case's `landelijkUniekZaaknummer` (e.g. 'F.13/24/115') —
+        the same identifier the site's frontend uses. NOT the publicatiekenmerk
+        (passing that returns an empty list, which is why verslagen were never
+        captured before). Returns a list of dicts with keys
+        `Titel`, `DatumVerslagen` (.NET /Date(...)/), and `VerslagKenmerk`.
+        """
         self._throttle()
-        kenmerk_underscored = kenmerk.replace(".", "_")
-        logger.info("Fetching reports for %s", kenmerk)
+        ident = quote(zaaknummer, safe="")
+        logger.info("Fetching verslagen for %s", zaaknummer)
         resp = self.session.get(
-            f"{BASE_URL}/Services/VerslagenService/findGoedgekeurdeVerslagen/{kenmerk_underscored}",
+            f"{BASE_URL}/Services/VerslagenService/findGoedgekeurdeVerslagen/{ident}",
             timeout=30,
         )
         resp.raise_for_status()
