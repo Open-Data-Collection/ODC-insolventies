@@ -80,6 +80,24 @@ def doorstart(doorstart_text: str) -> dict | None:
         doorstart_text)
 
 
+def koopsom(doorstart_text: str) -> dict | None:
+    """Purchase price of the doorstart/overname, if the curator stated it.
+
+    The financieel verslag only records estate proceeds by category (goodwill,
+    assets) — the *agreed koopsom* is usually only in this narrative section
+    (e.g. 'een koopprijs overeengekomen van € 55.000'), and can be far higher
+    than the goodwill line."""
+    return _call(
+        "Uit de sectie 'Voortzetten / doorstart onderneming'. Bepaal de KOOPSOM/KOOPPRIJS "
+        "die is overeengekomen voor de doorstart of overname van (activa van) de onderneming. "
+        "Antwoord met UITSLUITEND JSON: "
+        '{"koopsom": totaalbedrag in hele euro als getal, of null als geen bedrag genoemd; '
+        '"toelichting": korte toelichting bij het bedrag (bv. "onvoorwaardelijk deel", '
+        '"plus variabel/earn-out", "boedelbijdrage per klant") of null}. '
+        "Neem alleen een expliciet genoemd overeengekomen bedrag; verzin niets.",
+        doorstart_text)
+
+
 def domeinnamen(andere_activa_text: str) -> dict | None:
     """Domains / IE assets from '3.8 Andere activa' — feeds the domain-value angle."""
     return _call(
