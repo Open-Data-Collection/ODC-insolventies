@@ -44,7 +44,8 @@ def worklist(client, reset: bool):
         HAVING first_nar != '' AND last_fin != ''
     """)
     meta = {r["kenmerk"]: r for r in client.ch_execute(
-        "SELECT kenmerk, insolventienummer, kvk_nummer FROM insolventies.processed_cases FINAL WHERE type='company'")}
+        "SELECT kenmerk, insolventienummer, kvk_nummer, debtor_name "
+        "FROM insolventies.processed_cases FINAL WHERE type='company'")}
     done = set()
     if not reset:
         done = {r["kenmerk"] for r in client.ch_execute(
@@ -71,6 +72,18 @@ def write(client, kenmerk, insno, kvk, rec):
         "beschikbaar_voor_uitdeling": bo.get("beschikbaar_voor_uitdeling"),
         "pref_recovery_pct": pref.get("recovery_pct"),
         "conc_recovery_pct": conc.get("recovery_pct"),
+        "koopsom": rec.get("koopsom"),
+        "koopsom_toelichting": rec.get("koopsom_toelichting"),
+        "personeel_ttv": rec.get("personeel_ttv"),
+        "personeel_jaar_voor": rec.get("personeel_jaar_voor"),
+        "bestuurders_gehasht": rec.get("bestuurders_gehasht") or [],
+        "onroerend_goed": rec.get("onroerend_goed"),
+        "huurpand": rec.get("huurpand"),
+        "boekhoudplicht_voldaan": rec.get("boekhoudplicht_voldaan"),
+        "depot_jaarrekeningen_ok": rec.get("depot_jaarrekeningen_ok"),
+        "onbehoorlijk_bestuur": rec.get("onbehoorlijk_bestuur"),
+        "paulianeus_handelen": rec.get("paulianeus_handelen"),
+        "afwikkeling": rec.get("afwikkeling") or "",
         "model": os.environ.get("LLM_MODEL", "gemma-4-E4B"),
     }])
 
@@ -85,35 +98,75 @@ def write(client, kenmerk, insno, kvk, rec):
     if sales:
         client.ch_insert("insolventies.processed_asset_sales", sales)
 
+    debt = rec.get("debt") or {}
+    if debt or rec.get("concurrent_aantal") is not None:
+        client.ch_insert("insolventies.processed_debt", [{
+            "kenmerk": kenmerk,
+            "boedelvorderingen": debt.get("boedelvorderingen"),
+            "pref_fiscus": debt.get("pref_fiscus"),
+            "pref_uwv": debt.get("pref_uwv"),
+            "pref_overig": debt.get("pref_overig"),
+            "pref_totaal": debt.get("pref_totaal"),
+            "concurrent_bedrag": debt.get("concurrent_bedrag"),
+            "concurrent_aantal": rec.get("concurrent_aantal"),
+        }])
+
+    rels = [{"kenmerk": kenmerk, "relatie": r["relatie"],
+             "company_name": r["company_name"], "detail": r.get("detail") or ""}
+            for r in rec.get("relations") or []]
+    if rels:
+        client.ch_insert("insolventies.processed_relations", rels)
+
+
+def _process_one(client, w, use_llm):
+    rec = extract_company(
+        pdf_text(client, w["first_nar"]),
+        pdf_text(client, w["last_nar"]),
+        pdf_text(client, w["last_fin"]),
+        use_llm=use_llm,
+        own_name=w.get("debtor_name"))
+    write(client, w["kenmerk"], w.get("insolventienummer"), w.get("kvk_nummer"), rec)
+
 
 def main(argv=None):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     p = argparse.ArgumentParser()
     p.add_argument("--limit", type=int, default=0, help="max companies (0 = all)")
     p.add_argument("--reset", action="store_true", help="re-extract already-done companies")
     p.add_argument("--no-llm", action="store_true", help="deterministic only (no E4B)")
+    p.add_argument("--workers", type=int, default=4,
+                   help="parallel companies (E4B box serves 16 lanes; each "
+                        "worker thread gets its own OdcClient)")
     args = p.parse_args(argv)
 
-    client = OdcClient(PROJECT)
-    wl = worklist(client, args.reset)
+    wl = worklist(OdcClient(PROJECT), args.reset)
     if args.limit:
         wl = wl[: args.limit]
-    print(f"companies to extract: {len(wl)}", file=sys.stderr)
+    print(f"companies to extract: {len(wl)} (workers={args.workers})", file=sys.stderr)
 
-    ok = err = 0
-    for i, w in enumerate(wl, 1):
-        try:
-            rec = extract_company(
-                pdf_text(client, w["first_nar"]),
-                pdf_text(client, w["last_nar"]),
-                pdf_text(client, w["last_fin"]),
-                use_llm=not args.no_llm)
-            write(client, w["kenmerk"], w.get("insolventienummer"), w.get("kvk_nummer"), rec)
-            ok += 1
-        except Exception as e:
-            err += 1
-            print(f"  ERR {w['kenmerk']}: {type(e).__name__}: {e}", file=sys.stderr)
-        if i % 25 == 0:
-            print(f"  {i}/{len(wl)} (ok={ok} err={err})", file=sys.stderr)
+    local = threading.local()
+
+    def run_one(w):
+        if not hasattr(local, "client"):
+            local.client = OdcClient(PROJECT)
+        _process_one(local.client, w, use_llm=not args.no_llm)
+
+    ok = err = done = 0
+    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+        futs = {pool.submit(run_one, w): w for w in wl}
+        for fut in as_completed(futs):
+            done += 1
+            try:
+                fut.result()
+                ok += 1
+            except Exception as e:
+                err += 1
+                w = futs[fut]
+                print(f"  ERR {w['kenmerk']}: {type(e).__name__}: {e}", file=sys.stderr)
+            if done % 25 == 0:
+                print(f"  {done}/{len(wl)} (ok={ok} err={err})", file=sys.stderr)
     print(f"done: ok={ok} err={err}", file=sys.stderr)
     return 0
 

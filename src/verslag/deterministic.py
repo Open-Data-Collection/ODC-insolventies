@@ -29,7 +29,12 @@ def parse_euro(s):
 
 def parse_omzet(text):
     """Revenue/P&L/balance history table (column-position aware so empty cells
-    don't misalign). Lives in the first verslag's 'Financiële gegevens'."""
+    don't misalign). Lives in the 'Financiële gegevens' block of a narrative
+    verslag.
+
+    Consolidated multi-BV verslagen (one verslag covering a whole group)
+    repeat the same year once per BV — those rows can't be attributed to THIS
+    company, so a duplicate year aborts the parse and returns []."""
     rows, lines, hdr = [], text.splitlines(), None
     for i, ln in enumerate(lines):
         if re.search(r"Jaar\s+Omzet", ln) and "Balanstotaal" in ln:
@@ -38,6 +43,8 @@ def parse_omzet(text):
     if hdr is None:
         return rows
     h = lines[hdr]
+    if "Winst" not in h:  # header variant without a Winst/verlies column
+        return rows
     b1 = (h.index("Winst") + h.index("Omzet")) // 2
     b2 = (h.index("Balanstotaal") + h.index("Winst")) // 2
     for ln in lines[hdr + 1: hdr + 14]:
@@ -48,13 +55,28 @@ def parse_omzet(text):
             if rows:
                 break
             continue
-        row = {"jaar": int(m.group(1) + m.group(2)), "omzet": None,
+        jaar = int(m.group(1) + m.group(2))
+        if any(r["jaar"] == jaar for r in rows):
+            return []  # consolidated multi-BV table — not attributable
+        row = {"jaar": jaar, "omzet": None,
                "winst_verlies": None, "balanstotaal": None}
         for cm in re.finditer(EUR, ln):
             v = parse_euro(cm.group(0))
             row["omzet" if cm.start() < b1 else "winst_verlies" if cm.start() < b2 else "balanstotaal"] = v
         rows.append(row)
     return rows
+
+
+def merge_omzet(primary, secondary):
+    """Merge two omzet tables by year; primary (latest verslag — cumulative,
+    most complete) wins per non-null cell, secondary fills the gaps."""
+    by_year = {r["jaar"]: dict(r) for r in secondary}
+    for r in primary:
+        cur = by_year.setdefault(r["jaar"], dict(r))
+        for k in ("omzet", "winst_verlies", "balanstotaal"):
+            if r.get(k) is not None:
+                cur[k] = r[k]
+    return [by_year[y] for y in sorted(by_year)]
 
 
 # canonical asset category -> pattern matched on a "Subtotaal|Totaal <x>" line
@@ -68,10 +90,17 @@ _ASSET_CATS = [
     ("liquide_middelen", r"liquide middelen"),
     ("debiteuren", r"debiteuren"),
     ("bank_zekerheden", r"bank / zekerheden"),
-    ("doorstart", r"voortzetten / doorstart"),
+    # voortzetten and doorstart split out (their combined section total would
+    # overstate doorstart proceeds); the "totaal\s+" anchor in the finditer
+    # keeps "doorstart onderneming" from matching the combined line.
+    ("voortzetten", r"voortzetten onderneming"),
+    ("doorstart", r"doorstart onderneming"),
+    ("voortzetten_doorstart_totaal", r"voortzetten / doorstart"),
     ("rechtmatigheid", r"rechtmatigheid"),
     ("procedures", r"procedures"),
-    ("overig", r"overig"),
+    # (?![a-z]) so "overige gebonden activa" (usually € 0,00) can't shadow the
+    # real "Subtotaal overig" restituties/rente line via last-match-wins
+    ("overig", r"overig(?![a-z])"),
     ("vrij_actief_totaal", r"vrij actief"),
 ]
 
@@ -101,15 +130,132 @@ def parse_boedel(text):
     return out
 
 
+_CRED_LABELS = {
+    # uitdelingslijst label variants seen in the wild (spot-check: some
+    # verslagen use bare "Concurrente crediteuren" instead of "Totaal ...
+    # schuldeisers", which lost the 0%-recovery signal)
+    "preferente": r"(?:Totaal preferente schuldeisers|Preferente crediteuren)",
+    "concurrente": r"(?:Totaal concurrente schuldeisers|Concurrente crediteuren)",
+}
+
+
 def parse_creditors(text):
     """Preferente/concurrente schuldeisers: claimed vs paid + recovery %."""
     out = {}
-    for kind in ("preferente", "concurrente"):
-        m = re.search(r"Totaal " + kind + r" schuldeisers\s+(" + EUR + r")\s+(" + EUR + r")\s+([\d.,]+)\s*%", text)
+    for kind, label in _CRED_LABELS.items():
+        m = re.search(label + r"\s+(" + EUR + r")\s+(" + EUR + r")\s+([\d.,]+)\s*%", text)
         if m:
             out[kind] = {
                 "ingediend": parse_euro(m.group(1)),
                 "uitkering": parse_euro(m.group(2)),
                 "recovery_pct": float(m.group(3).replace(".", "").replace(",", ".")),
             }
+    return out
+
+
+# debt-load labels; matched in the financieel verslag's crediteuren block
+# first, then the narrative 8.x section as fallback. First € on the line is
+# the claimed (ingediend) amount.
+_DEBT_LABELS = [
+    ("boedelvorderingen", r"Totaal boedelvorderingen"),
+    ("pref_fiscus", r"Preferente vordering(?:en)? van de fiscus"),
+    ("pref_uwv", r"Preferente vordering(?:en)? van het UWV"),
+    ("pref_overig", r"Andere preferente crediteuren"),
+    ("pref_totaal", r"Totaal preferente schuldeisers"),
+    ("concurrent_bedrag", r"(?:Totaal concurrente schuldeisers|Bedrag concurrente crediteuren|Concurrente crediteuren)"),
+]
+
+
+def parse_debt(fin_text, crediteuren_section=""):
+    """Debt amounts (what was claimed, not what was paid).
+    concurrent_aantal (8.5) is left to the LLM — its form layout is erratic."""
+    out = {}
+    for key, label in _DEBT_LABELS:
+        for source in (fin_text, crediteuren_section):
+            if not source or key in out:
+                continue
+            m = re.search(label + r"[^\n€]*(" + EUR + r")", source, re.I)
+            if m:
+                v = parse_euro(m.group(1))
+                if v is not None:
+                    out[key] = v
+    return out
+
+
+_PERSONEEL_HDRS = [
+    ("personeel_ttv", r"Aantal ten tijde van faill|Personeel gemiddeld aantal"),
+    ("personeel_jaar_voor", r"Aantal in jaar voor faill"),
+]
+
+
+def parse_personeel(text):
+    """Headcount from section 2 (KEI layout). The value sits on its own line
+    in the LEFT column within a few lines of the header; the right-hand column
+    holds verslag numbers/dates — so only accept a standalone integer that
+    starts before column 40. (An LLM reliably grabs the wrong column here:
+    it read '1' for a 69-employee firm.)"""
+    out = {}
+    lines = text.splitlines()
+    for key, hdr in _PERSONEEL_HDRS:
+        rx = re.compile(hdr, re.I)
+        for i, ln in enumerate(lines):
+            if not rx.search(ln):
+                continue
+            for cand in lines[i + 1: i + 5]:
+                m = re.match(r"^(\s*)(\d{1,5})\s*$", cand)
+                if m and len(m.group(1)) < 40:
+                    out[key] = int(m.group(2))
+                    break
+            if key in out:
+                break
+    return out
+
+
+# narrative section 8 (Crediteuren) subsections -> debt keys
+_SEC8_KEY = {"1": "boedelvorderingen", "2": "pref_fiscus", "3": "pref_uwv",
+             "4": "pref_overig", "5": "concurrent_aantal", "6": "concurrent_bedrag"}
+# a value line: left-column (col<40) bare amount, optionally followed by the
+# right-hand verslag-number column. Lines with text before the amount are
+# itemized claims — skipped on purpose.
+_SEC8_EUR = re.compile(r"^(\s{0,39})(€\s*-?\s*[\d.]+,\d{2})\s*\d{0,4}\s*$")
+_SEC8_INT = re.compile(r"^(\s{0,39})(\d{1,6})(\s+\d{1,4})?\s*$")
+
+
+def parse_debt_sections(text):
+    """Debt amounts from a narrative verslag's section 8. The layout is
+    cumulative — each subsection repeats one value line per verslag-period —
+    so the LAST standalone value in a subsection window is the current one."""
+    lines = text.splitlines()
+    hdrs = []
+    for i, ln in enumerate(lines):
+        m = re.match(r"\s{0,8}8\.(\d)\s", ln)
+        if m:
+            hdrs.append((i, m.group(1)))
+        elif re.match(r"\s{0,8}(9\.|10\.)\s", ln):
+            hdrs.append((i, None))
+    out = {}
+    for j, (start, digit) in enumerate(hdrs):
+        key = _SEC8_KEY.get(digit or "")
+        if not key:
+            continue
+        end = hdrs[j + 1][0] if j + 1 < len(hdrs) else min(len(lines), start + 40)
+        last = None
+        for ln in lines[start + 1: end]:
+            if key == "concurrent_aantal":
+                m = _SEC8_INT.match(ln)
+                if m:
+                    v = int(m.group(2))
+                    # a bare 4-digit line could be a year; require the
+                    # verslag-number column for year-like values
+                    if 1990 <= v <= 2035 and not m.group(3):
+                        continue
+                    last = v
+            else:
+                m = _SEC8_EUR.match(ln)
+                if m:
+                    v = parse_euro(m.group(2))
+                    if v is not None:
+                        last = v
+        if last is not None:
+            out[key] = last
     return out
