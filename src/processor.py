@@ -148,6 +148,70 @@ class InsolventiesProcessor(Processor):
         data = [[r[c] for c in cols] for r in rows]
         self.ch.insert(table, data, column_names=cols)
 
+    # ------------------------------------------------------------ enrichment
+
+    # A bankrupt rechtspersoon stays in the Handelsregister until liquidation
+    # completes, then vanishes from registry extracts — so KvK data (SBI codes,
+    # activity text, trade names) must be SNAPSHOTTED while the case is fresh
+    # (2026 cohort joins at ~83%; two-year-old cases at <10%). The anti-join
+    # makes this idempotent and append-only: an existing snapshot is never
+    # overwritten. See schema/enrichment.sql.
+    KVK_SNAPSHOT_SQL = """
+    INSERT INTO insolventies.kvk_snapshot
+        (kvk_nummer, sbi_hoofd, sbi_codes, sbi_descriptions,
+         activiteit_omschrijving, handelsnamen, rechtsvorm, bron)
+    WITH new_kvks AS (
+        SELECT DISTINCT kvk_nummer FROM insolventies.processed_cases FINAL
+        WHERE type IN ('company', 'eenmanszaak')
+          AND kvk_nummer IS NOT NULL AND kvk_nummer != ''
+          AND kvk_nummer NOT IN (SELECT kvk_nummer FROM insolventies.kvk_snapshot)
+    )
+    SELECT
+        k.kvk_nummer,
+        coalesce(s.hoofd_code, ''),
+        coalesce(s.codes, []),
+        coalesce(s.descriptions, []),
+        coalesce(b.act_oms, ''),
+        coalesce(b.namen, []),
+        coalesce(b.rv, ''),
+        'kvk_scrape_2026'
+    FROM new_kvks k
+    LEFT JOIN (
+        SELECT kvk_nummer,
+               anyIf(sbi_code, is_main_activity) AS hoofd_code,
+               groupArray(sbi_code) AS codes,
+               groupArray(sbi_description) AS descriptions
+        FROM kvk.sbi
+        WHERE kvk_nummer IN (SELECT kvk_nummer FROM new_kvks)
+        GROUP BY kvk_nummer
+    ) s ON k.kvk_nummer = s.kvk_nummer
+    LEFT JOIN (
+        SELECT kvk_nummer,
+               argMax(activiteit_omschrijving, length(activiteit_omschrijving)) AS act_oms,
+               argMax(huidige_handelsnamen, length(activiteit_omschrijving)) AS namen,
+               any(rechtsvorm_omschrijving) AS rv
+        FROM kvk.businesses
+        WHERE kvk_nummer IN (SELECT kvk_nummer FROM new_kvks)
+        GROUP BY kvk_nummer
+    ) b ON k.kvk_nummer = b.kvk_nummer
+    WHERE s.kvk_nummer != '' OR b.kvk_nummer != ''
+    """
+
+    def enrich_kvk_snapshot(self):
+        self.ch.command(self.KVK_SNAPSHOT_SQL)
+
+    def run(self, argv=None):
+        import sys
+        rc = super().run(argv)
+        args = argv if argv is not None else sys.argv[1:]
+        if rc == 0 and "--dry-run" not in args:
+            try:
+                self.enrich_kvk_snapshot()
+            except Exception as e:
+                warn("kvk snapshot enrichment failed",
+                     err=f"{type(e).__name__}: {e}", **self._log_kwargs())
+        return rc
+
 
 if __name__ == "__main__":
     raise SystemExit(InsolventiesProcessor().run())

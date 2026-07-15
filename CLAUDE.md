@@ -59,8 +59,12 @@ Built on the ODC three-component pipeline pattern (see ODC-scraping-infra
 | `processed_cases` | processor | one row per case |
 | `processed_publications` | processor | one row per publication event |
 | `processed_documents` | processor | one row per verslag (with `pdf_path`) |
+| `kvk_snapshot` | processor (enrichment step) | one row per debtor KvK: SBI codes, activity text, trade names — snapshotted while the company is still registered (bankrupt companies get deregistered once liquidation ends, so this data is unrecoverable later) |
+| `processed_profile` / `processed_revenue` / `processed_asset_sales` / `processed_debt` / `processed_relations` | verslag extraction (`src/verslag/run.py`, manual batch) | per-company firmographics/financials extracted from verslag PDFs (deterministic parsers + Gemma-4 E4B via odc-llm gateway). PRIVACY: natural persons only as salted hashes; see `schema/financials.sql` |
+| `fv_listing` / `backfill_probe` | `scripts/backfill_fv.py` (one-off historical backfill) | faillissementsverslagen.com index (705k verslagen to 2010) + registry probe verdicts; see `schema/backfill.sql` |
 
-Apply schemas: `schema/raw.sql`, `schema/processed.sql` (comment-aware split via
+Apply schemas: `schema/raw.sql`, `schema/processed.sql`, `schema/financials.sql`,
+`schema/backfill.sql`, `schema/enrichment.sql` (comment-aware split via
 `OdcClient.ensure_ch_schema()` or `clickhouse-client < schema/*.sql`).
 
 ## Running locally
