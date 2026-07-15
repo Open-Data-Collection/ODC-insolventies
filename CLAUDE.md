@@ -7,8 +7,10 @@ Built on the ODC three-component pipeline pattern (see ODC-scraping-infra
 
 ## Architecture
 
-- **Scheduler** (`src/scheduler.py`, Nomad batch-periodic on `services`, daily
-  `0 6 * * *`): discovery runs here — searches every court for recent
+- **Scheduler** (`src/scheduler.py`, Nomad batch-periodic on `services`, weekdays
+  07:00/12:00/17:00 Europe/Amsterdam — courts pronounce faillissementen almost
+  exclusively on Tuesdays during business hours, weekends are silent): discovery
+  runs here — searches every court for recent
   publications, anti-joins the discovered kenmerks against
   `insolventies.raw_cases` (skip already-scraped, honour cooldown/max-attempts
   for failures), and pushes `{kenmerk}` tasks to the `insolventies:tasks` Redis
