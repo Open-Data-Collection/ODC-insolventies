@@ -8,9 +8,14 @@ job "insolventies-processor" {
   }
 
   # Runs on odc-storage, next to ClickHouse — CH→CH shuffle stays local.
+  # TEMP 2026-08-12: pinned to `services` instead — the storage node's Nomad
+  # docker driver has a wedged image-pull coordinator for this image (allocs
+  # hang in "Downloading image" forever, even with force_pull=false; manual
+  # `docker pull` works fine). Revert to `storage` after
+  # `systemctl restart nomad` on odc-storage clears the driver state.
   constraint {
     attribute = "${node.class}"
-    value     = "storage"
+    value     = "services"
   }
 
   group "processor" {
