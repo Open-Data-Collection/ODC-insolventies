@@ -27,6 +27,22 @@ def _token():
         return ""
 
 
+def _urlopen_retry_503(req, tries: int = 40, wait: float = 30.0) -> str:
+    """The gateway 503s while its pool is cold (scale-to-zero + a cold start
+    that can run 15-45 min while a box pulls its GGUF). Waiting it out beats
+    failing the whole batch — a 2026-08-12 run burned all 745 companies on
+    503s in under a minute. Bounded at tries*wait (20 min) so a genuinely
+    dead endpoint still fails."""
+    import time
+    for i in range(tries):
+        try:
+            return json.loads(urllib.request.urlopen(req, timeout=120).read())["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            if e.code != 503 or i == tries - 1:
+                raise
+            time.sleep(wait)
+
+
 def _call(system: str, user: str, max_tokens: int = 220) -> dict | None:
     """One chat completion; parse the {...} JSON block from the reply.
 
@@ -48,7 +64,7 @@ def _call(system: str, user: str, max_tokens: int = 220) -> dict | None:
             headers={"Authorization": f"Bearer {_token()}", "Content-Type": "application/json"},
             method="POST")
         try:
-            txt = json.loads(urllib.request.urlopen(req, timeout=120).read())["choices"][0]["message"]["content"]
+            txt = _urlopen_retry_503(req)
         except urllib.error.HTTPError as e:
             if e.code == 400:
                 continue  # context overflow — retry clamped harder, then None
