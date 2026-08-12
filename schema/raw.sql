@@ -14,7 +14,7 @@ CREATE DATABASE IF NOT EXISTS insolventies;
 CREATE TABLE IF NOT EXISTS insolventies.raw_cases (
     kenmerk       String,
     scraped_at    DateTime64(3, 'UTC') DEFAULT now64(3),
-    status        LowCardinality(String),          -- 'ok' | 'fetch_failed' | 'parse_failed'
+    status        LowCardinality(String),          -- 'ok' | 'fetch_failed' | 'parse_failed' | 'purged' (register dropped the case; terminal)
     entity_type   LowCardinality(String),          -- company | eenmanszaak | person | ''
     error         String DEFAULT '',
     record        String DEFAULT '',               -- full record.to_dict() as JSON ('' on failure)

@@ -61,7 +61,8 @@ class InsolventiesScheduler(Scheduler):
                     kenmerk,
                     max(scraped_at)                         AS last_attempt,
                     count()                                 AS attempts,
-                    countIf(status = 'ok')                  AS successes
+                    countIf(status = 'ok')                  AS successes,
+                    countIf(status = 'purged')              AS purged
                 FROM insolventies.raw_cases
                 WHERE kenmerk IN %(ks)s
                 GROUP BY kenmerk
@@ -74,6 +75,8 @@ class InsolventiesScheduler(Scheduler):
             for kenmerk, case in candidates.items():
                 prior = seen.get(kenmerk)
                 if prior is not None:
+                    if prior["purged"] > 0:
+                        continue  # register no longer publishes this case — terminal
                     if prior["successes"] > 0:
                         continue  # already scraped successfully (refresh handles these)
                     if prior["attempts"] >= MAX_ATTEMPTS:
@@ -108,6 +111,12 @@ class InsolventiesScheduler(Scheduler):
             WHERE r.entity_type IN ('company', 'eenmanszaak')
               AND coalesce(p.terminal_events, 0) = 0
               AND r.last_ok < now64(3, 'UTC') - INTERVAL %(days)s DAY
+              -- a later 'purged' attempt means the register dropped the case:
+              -- terminal, stop refreshing it (would fail forever otherwise)
+              AND r.kenmerk NOT IN (
+                  SELECT DISTINCT kenmerk FROM insolventies.raw_cases
+                  WHERE status = 'purged'
+              )
             ORDER BY r.last_ok ASC
             LIMIT %(n)s
             """,

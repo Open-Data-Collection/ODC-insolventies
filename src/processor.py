@@ -90,18 +90,22 @@ class InsolventiesProcessor(Processor):
         publications = rec.get("publications") or []
         documents = rec.get("documents") or []
 
+        # `or ""` everywhere a non-Nullable String column is fed: the API can
+        # return an explicit null (e.g. toezichtZaaknummer since 2026-07), and
+        # .get(key, "") passes that None through — one None fails the whole
+        # column insert and wedges the checkpoint.
         case = {
             "kenmerk":            kenmerk,
-            "insolventienummer":  rec.get("insolventienummer", ""),
-            "toezichtzaaknummer": rec.get("toezichtzaaknummer", ""),
-            "type":               rec.get("type", ""),
-            "court":              rec.get("court", ""),
-            "judge":              rec.get("judge", ""),
+            "insolventienummer":  rec.get("insolventienummer") or "",
+            "toezichtzaaknummer": rec.get("toezichtzaaknummer") or "",
+            "type":               rec.get("type") or "",
+            "court":              rec.get("court") or "",
+            "judge":              rec.get("judge") or "",
             "is_anonymized":      bool(rec.get("is_anonymized", False)),
-            "debtor_name":        debtor.get("name", ""),
+            "debtor_name":        debtor.get("name") or "",
             "kvk_nummer":         debtor.get("kvk_nummer"),
             "city":               _pick_city(debtor.get("addresses") or []),
-            "curator_names":      [c.get("name", "") for c in (rec.get("curators") or [])],
+            "curator_names":      [c.get("name") or "" for c in (rec.get("curators") or [])],
             "publication_count":  len(publications),
             "document_count":     len(documents),
             "scraped_at":         scraped_at,
@@ -109,21 +113,21 @@ class InsolventiesProcessor(Processor):
 
         pub_rows = [{
             "kenmerk":            kenmerk,
-            "publicatie_kenmerk": p.get("kenmerk", ""),
+            "publicatie_kenmerk": p.get("kenmerk") or "",
             "publicatie_datum":   _to_date(p.get("date")),
-            "description":        p.get("description", ""),
-            "event_type":         p.get("event_type", ""),
+            "description":        p.get("description") or "",
+            "event_type":         p.get("event_type") or "",
             "event_subtype":      p.get("event_subtype"),
             "event_date":         _to_date(p.get("event_date")),
-            "insolvency_type":    p.get("insolvency_type", ""),
+            "insolvency_type":    p.get("insolvency_type") or "",
             "scraped_at":         scraped_at,
         } for p in publications]
 
         doc_rows = [{
             "kenmerk":          kenmerk,
-            "document_kenmerk": d.get("kenmerk", ""),
+            "document_kenmerk": d.get("kenmerk") or "",
             "document_date":    _to_date(d.get("date")),
-            "document_type":    d.get("type", ""),
+            "document_type":    d.get("type") or "",
             "pdf_path":         d.get("pdf_path"),
             "scraped_at":       scraped_at,
         } for d in documents]

@@ -21,6 +21,15 @@ from src.privacy import anonymize_record
 
 logger = logging.getLogger(__name__)
 
+
+class CasePurgedError(Exception):
+    """The register no longer publishes this case (API returns model=null).
+
+    Happens when a closed case's publication window lapses — typically
+    schuldsanering/faillissement cases some time after ending. Terminal: the
+    record will not come back, so the scheduler must stop re-queueing it.
+    """
+
 # .NET date format: /Date(1769382000000+0100)/
 _DOTNET_DATE_RE = re.compile(r"/Date\((\d+)([+-]\d{4})?\)/")
 
@@ -188,10 +197,10 @@ def parse_case(raw: dict) -> InsolvencyRecord:
 
     return InsolvencyRecord(
         kenmerk=kenmerk,
-        insolventienummer=model.get("landelijkUniekZaaknummer", ""),
-        toezichtzaaknummer=model.get("toezichtZaaknummer", ""),
+        insolventienummer=model.get("landelijkUniekZaaknummer") or "",
+        toezichtzaaknummer=model.get("toezichtZaaknummer") or "",
         type=entity_type,
-        court=model.get("behandelendeInstantieNaam", ""),
+        court=model.get("behandelendeInstantieNaam") or "",
         judge=model.get("RC", "") or "",
         is_anonymized=False,
         debtor=debtor,
@@ -208,6 +217,8 @@ def build_record(client: ApiClient, kenmerk: str) -> InsolvencyRecord:
     (best-effort) — the core record is still returned.
     """
     raw = client.get_case(kenmerk)
+    if isinstance(raw, dict) and "model" in raw and raw["model"] is None:
+        raise CasePurgedError(kenmerk)
     record = parse_case(raw)
 
     # Set the query kenmerk (may differ from the latest publication kenmerk)

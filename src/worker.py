@@ -22,7 +22,7 @@ from odc import OdcClient
 from odc.logging import info, warn, error, heartbeat
 
 from src.api import ApiClient
-from src.scrape import build_record
+from src.scrape import CasePurgedError, build_record
 
 PROJECT       = os.environ.get("PROJECT_NAME", os.environ.get("PROJECT", "insolventies"))
 QUEUE_KEY     = os.environ.get("QUEUE_KEY", "insolventies:tasks")
@@ -93,6 +93,11 @@ def scrape_task(client: OdcClient, api: ApiClient, kenmerk: str) -> dict:
     }
     try:
         record = build_record(api, kenmerk)
+    except CasePurgedError:
+        info("case purged from register", kenmerk=kenmerk, **_LOG)
+        base["status"] = "purged"
+        base["error"] = "register no longer publishes this case (model=null)"
+        return base
     except Exception as e:
         error("scrape failed", kenmerk=kenmerk, err=f"{type(e).__name__}: {e}", **_LOG)
         base["status"] = "fetch_failed"
